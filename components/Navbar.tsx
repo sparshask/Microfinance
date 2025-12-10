@@ -101,7 +101,7 @@ export default function Navbar() {
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
           <div className="flex-shrink-0">
-            <h1 className="text-xl font-bold text-blue-600">MicroFinance</h1>
+            <h1 className="text-xl font-bold text-green-800">FieldFund</h1>
           </div>
 
           {/* Desktop Nav */}
@@ -124,21 +124,15 @@ export default function Navbar() {
             >
               Profile
             </a>
-            <a
-              href="/Profile"
-              className="text-gray-700 hover:text-blue-600 transition"
-            >
-              {isConnected
-                ? ` ${account?.slice(0, 6)}...${account?.slice(-4)}`
-                : ""}
-            </a>
+
             <a href="/Lender">
-            <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition">
+            <button className="bg-white-600 text-white px-4 py-2 rounded-lg bg-green-800 transition">
+            
               Lender Login
             </button></a>
             <button
-              className={`bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition ${
-                isConnected ? "bg-blue-800" : ""
+              className={`bg-white-600 text-white px-4 py-2 rounded-lg bg-green-800 transition ${
+                isConnected ? "bg--800" : ""
               }`}
               onClick={connectWallet}
             >
@@ -221,3 +215,4 @@ export default function Navbar() {
     </nav>
   );
 }
+

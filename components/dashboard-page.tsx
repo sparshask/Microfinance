@@ -3,6 +3,7 @@ import { ethers } from "ethers";
 import { useState, useEffect } from "react";
 import LoanRequestForm from "./loan-request-form";
 import Navbar from "./Navbar";
+
 declare global {
   interface Window {
     ethereum?: any;
@@ -56,7 +57,7 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="dashboard bg-gradient-to-bl from-[#0f172a] via-[#1e1a78] to-[#0f172a]">
+    <div className="dashboard bg-gradient-to-bl from-[#1b5240] via-[#2f6f5a] to-[#cfeee5] min-h-screen">
       <Navbar />
       <LoanRequestForm />
     </div>

@@ -1,45 +1,41 @@
+// hardhat.config.ts
+import dotenv from "dotenv";
+dotenv.config({ path: ".env.local" });
 import { HardhatUserConfig } from "hardhat/config";
 import "@nomicfoundation/hardhat-toolbox";
 import "@openzeppelin/hardhat-upgrades";
-import "@openzeppelin/hardhat-defender";
-
-require("dotenv").config();
+// import "@openzeppelin/hardhat-defender"; 
 
 const config: HardhatUserConfig = {
-  solidity: "0.8.20",
-  defender: {
-    apiKey: "DroZ4MRDj8pHZ4KnPdieXtD3T6EW8Z68",
-    apiSecret: "mnBJgSP5BZwDK3SrReX8P4WTpztuamZaZypnip1MDGjX4Zan1uwdxkzeoXx8xLxU",
+  solidity: {
+    version: "0.8.22",
+    settings: { optimizer: { enabled: true, runs: 200 } },
   },
+
   networks: {
     sepolia: {
-      url: "https://ethereum-sepolia.publicnode.com",
-      chainId: 11155111
+      url: process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia.publicnode.com",
+      chainId: 11155111,
+      accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
     },
+    localhost: {
+      url: "http://127.0.0.1:8545",
+      chainId: 31337,
+    },
+  },
+
+  etherscan: {
+    apiKey: {
+      sepolia: process.env.ETHERSCAN_API_KEY || "",
+    },
+  },
+
+  paths: {
+    sources: "./contracts",
+    tests: "./test",
+    cache: "./cache",
+    artifacts: "./artifacts",
   },
 };
 
 export default config;
-
-// require("@nomicfoundation/hardhat-toolbox")
-// require("dotenv").config()
-
-// /** @type import('hardhat/config').HardhatUserConfig */
-// module.exports = {
-//   solidity: "0.8.20",
-//   networks: {
-//     sepolia: {
-//       url: process.env.SEPOLIA_RPC_URL || "",
-//       accounts: process.env.PRIVATE_KEY ? [process.env.PRIVATE_KEY] : [],
-//     },
-//   },
-//   etherscan: {
-//     apiKey: process.env.ETHERSCAN_API_KEY || "",
-//   },
-//   paths: {
-//     artifacts: "./artifacts",
-//     cache: "./cache",
-//     sources: "./contracts",
-//     tests: "./test",
-//   },
-// }

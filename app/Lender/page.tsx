@@ -1,285 +1,410 @@
 "use client";
-import React, { useState } from "react";
-import { motion } from "framer-motion";
-import "./page.css";
-import {
-  HomeIcon,
-  ClipboardListIcon,
-  DollarSignIcon,
-  EyeIcon,
-  PlusCircleIcon,
-  FileTextIcon,
-  SettingsIcon,
-  MenuIcon,
-  XIcon,
-  UserCircleIcon,
-} from "lucide-react";
 
-const menuItems = [
-  { name: "Dashboard", icon: HomeIcon },
-  { name: "Requests", icon: ClipboardListIcon },
-  { name: "Repayments", icon: DollarSignIcon },
-  { name: "Monitoring", icon: EyeIcon },
-  { name: "Add Fund", icon: PlusCircleIcon },
-  { name: "Get Report", icon: FileTextIcon },
-  { name: "Settings", icon: SettingsIcon },
-];
+import { useEffect, useState, useCallback } from "react";
+import { ethers } from "ethers";
+import Navbar from "../../components/Navbar";
+import microfinance from "../../contracts/abi/Microfinance.json";
 
-function LenderDashboard() {
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [loanRequests, setLoanRequests] = useState([
-    { id: 1, name: "Account 1", amount: 1000, status: "Pending" },
-    { id: 2, name: "Testing_ac", amount: 5000, status: "Pending" },
-  ]);
-  const [repayments, setRepayments] = useState([
-    { id: 1, name: "Account 1", amount: 2000, dueDate: "2025-04-15" },
-    { id: 2, name: "Account 1", amount: 5000, dueDate: "2025-04-20" },
-  ]);
-  const [menuOpen, setMenuOpen] = useState(false);
+declare global {
+  interface Window {
+    ethereum?: any;
+  }
+}
 
-  const handleLogin = () => {
-    if (username === "admin" && password === "123") {
-      setIsLoggedIn(true);
-    } else {
-      alert("Invalid credentials. Use admin/password.");
+type LoanRow = {
+  id: number;
+  borrower: string;
+  amountEth: string; // human string (ethers.formatEther)
+  amountWei: bigint;
+  duration: number;
+  purpose: string;
+  status: number; // 0 pending, 1 funded, 2 repaid, 3 rejected
+  dueDate: number; // unix seconds
+  lender: string;
+};
+
+const SEPOLIA_CHAIN_ID = 11155111n;
+
+export default function LenderDashboard() {
+  const [account, setAccount] = useState<string | null>(null);
+  const [providerReady, setProviderReady] = useState(false);
+  const [isSepolia, setIsSepolia] = useState(false);
+  const [loans, setLoans] = useState<LoanRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const contractAddress = process.env.NEXT_PUBLIC_CONTRACT_ADDRESS ?? "";
+
+  // init provider & network check
+  const initProvider = useCallback(async () => {
+    setError(null);
+    try {
+      if (!window.ethereum) {
+        setProviderReady(false);
+        setIsSepolia(false);
+        return;
+      }
+
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const network = await provider.getNetwork();
+      // chainId is bigint in ethers v6
+      setProviderReady(true);
+      setIsSepolia((network.chainId ?? 0n) === SEPOLIA_CHAIN_ID);
+    } catch (err: any) {
+      console.error("initProvider error:", err);
+      setProviderReady(false);
+      setIsSepolia(false);
+      setError(String(err?.message ?? err));
+    }
+  }, []);
+
+  // connect lender wallet (request accounts)
+  const connectWallet = useCallback(async () => {
+    setError(null);
+    try {
+      if (!window.ethereum) throw new Error("No wallet provider found (install Metamask/Rabby).");
+
+      const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      if (!accounts || accounts.length === 0) throw new Error("No accounts returned");
+      setAccount(accounts[0]);
+      // re-init (network/state)
+      await initProvider();
+    } catch (err: any) {
+      console.error("connectWallet:", err);
+      setError(err?.message || String(err));
+    }
+  }, [initProvider]);
+
+  // "Disconnect" (UI-only)
+  const disconnectWallet = () => {
+    setAccount(null);
+    setLoans([]);
+    setError(null);
+  };
+
+  // Switch account (re-prompt wallet account chooser)
+  const switchAccount = async () => {
+    setError(null);
+    try {
+      if (!window.ethereum) throw new Error("No wallet provider found");
+      const accounts: string[] = await window.ethereum.request({ method: "eth_requestAccounts" });
+      if (!accounts || accounts.length === 0) throw new Error("No accounts returned");
+      setAccount(accounts[0]);
+      await initProvider();
+      // optionally fetch loans for this account
+      await fetchLoans();
+    } catch (err: any) {
+      console.error("switchAccount:", err);
+      setError(err?.message || String(err));
     }
   };
 
-  const handleApprove = (id: number) => {
-    setLoanRequests((prev) =>
-      prev.map((loan) =>
-        loan.id === id ? { ...loan, status: "Approved" } : loan
-      )
-    );
+  // fetchLoans: loads all loans from contract (for lender view we show all loans)
+  const fetchLoans = useCallback(async () => {
+    setError(null);
+    setLoading(true);
+    setLoans([]);
+    try {
+      if (!contractAddress) throw new Error("NEXT_PUBLIC_CONTRACT_ADDRESS not set");
+      if (!window.ethereum) throw new Error("No provider (window.ethereum)");
+      const provider = new ethers.BrowserProvider(window.ethereum);
+
+      // quick network check
+      const net = await provider.getNetwork();
+      if ((net.chainId ?? 0n) !== SEPOLIA_CHAIN_ID) {
+        setIsSepolia(false);
+        throw new Error(`Please switch wallet network to Sepolia (current chainId=${net.chainId})`);
+      } else {
+        setIsSepolia(true);
+      }
+
+      // contract read-only
+      const contract = new ethers.Contract(contractAddress, (microfinance as any).abi, provider);
+
+      // We expect getLoanCount() and getLoan(uint256) exist
+      const countBn: bigint = await contract.getLoanCount();
+      const count = Number(countBn);
+
+      const out: LoanRow[] = [];
+      for (let i = 0; i < count; i++) {
+        const row: any = await contract.getLoan(i);
+        // contract.getLoan returns tuple (borrower, amount, duration, purpose, status, dueDate, lender)
+        // handle both named fields and tuple indices defensively
+        const borrower = String(row.borrower ?? row[0] ?? "0x0");
+        const amountWei = (() => {
+          const v = row.amount ?? row[1] ?? 0n;
+          try {
+            return BigInt(v.toString());
+          } catch {
+            return 0n;
+          }
+        })();
+        const amountEth = ethers.formatEther(amountWei);
+        const duration = Number(row.duration ?? row[2] ?? 0);
+        const purpose = String(row.purpose ?? row[3] ?? "");
+        const status = Number(row.status ?? row[4] ?? 0);
+        const dueDate = Number(row.dueDate ?? row[5] ?? 0);
+        const lenderAddr = String(row.lender ?? row[6] ?? "0x0000000000000000000000000000000000000000");
+
+        out.push({
+          id: i,
+          borrower,
+          amountEth,
+          amountWei,
+          duration,
+          purpose,
+          status,
+          dueDate,
+          lender: lenderAddr,
+        });
+      }
+
+      // newest first
+      out.reverse();
+      setLoans(out);
+    } catch (err: any) {
+      console.error("fetchLoans:", err);
+      setError(err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [contractAddress]);
+
+  // fundLoan (lender accepts) -> call contract.fundLoan(loanId) with correct value
+  const fundLoan = async (loanId: number, amountWei: bigint) => {
+    setActionLoading(loanId);
+    setError(null);
+    try {
+      if (!window.ethereum) throw new Error("No wallet provider found");
+      if (!contractAddress) throw new Error("NEXT_PUBLIC_CONTRACT_ADDRESS not set");
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, (microfinance as any).abi, signer);
+
+      // read lender fee bps
+      const lenderFeeBps: bigint = await contract.lenderFeeBps();
+      // amountWei is bigint already
+      const lenderFee = (amountWei * BigInt(lenderFeeBps)) / 10000n;
+      const totalValue = amountWei + lenderFee;
+
+      const tx = await contract.fundLoan(loanId, { value: totalValue });
+      setError("Waiting for transaction confirmation...");
+      await tx.wait();
+      setError(null);
+      // refresh loans
+      await fetchLoans();
+    } catch (err: any) {
+      console.error("fundLoan:", err);
+      setError(err?.message ?? String(err));
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  const handleReject = (id: number) => {
-    setLoanRequests((prev) =>
-      prev.map((loan) =>
-        loan.id === id ? { ...loan, status: "Rejected" } : loan
-      )
-    );
+  // rejectLoan -> owner-only onchain
+  const rejectLoan = async (loanId: number) => {
+    setActionLoading(loanId);
+    setError(null);
+    try {
+      if (!window.ethereum) throw new Error("No wallet provider found");
+      if (!contractAddress) throw new Error("NEXT_PUBLIC_CONTRACT_ADDRESS not set");
+      const provider = new ethers.BrowserProvider(window.ethereum);
+      const signer = await provider.getSigner();
+      const contract = new ethers.Contract(contractAddress, (microfinance as any).abi, signer);
+
+      const tx = await contract.rejectLoan(loanId);
+      setError("Waiting for transaction confirmation...");
+      await tx.wait();
+      setError(null);
+      await fetchLoans();
+    } catch (err: any) {
+      console.error("rejectLoan:", err);
+      setError(err?.message ?? String(err));
+    } finally {
+      setActionLoading(null);
+    }
   };
 
-  if (!isLoggedIn) {
-    return (
-      <div className="relative flex items-center justify-center min-h-screen overflow-hidden bg-black">
-        {/* Moving stars background */}
-        <div className="absolute inset-0 z-0 bg-white stars animate-starsMove opacity-40" />
-        <div className="absolute inset-0 z-0 bg-gradient-to-br from-indigo-900 via-blue-800 to-purple-900 opacity-70 animate-gradientFloat" />
+  // Listen for account / chain changes to keep UI in sync
+  useEffect(() => {
+    if (!window.ethereum) return;
 
-        {/* Login Card */}
-        <div className="relative z-10 w-[90%] max-w-md p-8 bg-white bg-opacity-20 rounded-2xl shadow-2xl backdrop-blur-md">
-          <h2 className="text-3xl font-bold text-center text-gray-100 mb-6">
-            Lender Login
-          </h2>
-          <input
-            type="text"
-            placeholder="Username"
-            className="w-full px-4 py-2 mb-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            className="w-full px-4 py-2 mb-6 border border-gray-300 rounded-xl focus:ring-2 focus:ring-indigo-500"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          <button
-            onClick={handleLogin}
-            className="w-full px-4 py-2 font-semibold text-white transition-transform bg-indigo-600 rounded hover:bg-indigo-700 hover:scale-105 shadow-md"
-          >
-            Login
-          </button>
-          {/* Sign Up Prompt */}
-          <div className="mt-6 text-center text-sm text-gray-200">
-            Don’t have an account?{" "}
-            <a href="#" className="text-indigo-300 hover:underline">
-              Sign up
-            </a>
-          </div>
-        </div>
+    const onAccounts = (accounts: string[]) => {
+      if (!accounts || accounts.length === 0) {
+        setAccount(null);
+      } else {
+        setAccount(accounts[0]);
+      }
+    };
+    const onChainChanged = async (_chainIdHex: string) => {
+      // re-init provider + refresh loans
+      await initProvider();
+      // if account present, attempt to fetch loans (but only if Sepolia)
+      if (account) {
+        try {
+          await fetchLoans();
+        } catch {
+          /* ignore */
+        }
+      }
+    };
 
-        {/* Custom Animations */}
-        <style jsx>{`
-          @keyframes starsMove {
-            0% {
-              background-position: 0 0;
-            }
-            100% {
-              background-position: 1000px 1000px;
-            }
-          }
+    window.ethereum.on?.("accountsChanged", onAccounts);
+    window.ethereum.on?.("chainChanged", onChainChanged);
 
-          @keyframes gradientFloat {
-            0%,
-            100% {
-              background-position: 0% 50%;
-            }
-            50% {
-              background-position: 100% 50%;
-            }
-          }
+    return () => {
+      window.ethereum?.removeListener?.("accountsChanged", onAccounts);
+      window.ethereum?.removeListener?.("chainChanged", onChainChanged);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [account, fetchLoans, initProvider]);
 
-          .stars {
-            background: url("https://www.transparenttextures.com/patterns/stardust.png");
-            background-size: cover;
-          }
+  // initial
+  useEffect(() => {
+    initProvider();
+  }, [initProvider]);
 
-          .animate-starsMove {
-            animation: starsMove 60s linear infinite;
-          }
-
-          .animate-gradientFloat {
-            background-size: 400% 400%;
-            animation: gradientFloat 30s ease infinite;
-          }
-        `}</style>
-      </div>
-    );
-  }
+  // fetch loans if account connected and network OK
+  useEffect(() => {
+    if (!account) return;
+    (async () => {
+      await initProvider();
+      if (isSepolia) {
+        await fetchLoans();
+      }
+    })();
+  }, [account, fetchLoans, initProvider, isSepolia]);
 
   return (
-    <div className="flex min-h-screen bg-gray-100">
-      {/* Sidebar */}
-      <div
-        className={`fixed inset-y-0 left-0 bg-white shadow-md z-20 w-64 transform transition-transform duration-300 ease-in-out ${
-          menuOpen ? "translate-x-0" : "-translate-x-full"
-        } md:translate-x-0 md:static`}
-      >
-        <div className="p-6">
-          <h2 className="text-2xl font-bold mb-6">Lender Panel</h2>
-          <nav className="space-y-4">
-            {menuItems.map(({ name, icon: Icon }) => (
-              <a
-                key={name}
-                href="#"
-                className="flex items-center gap-3 px-3 py-2 text-gray-700 rounded hover:bg-indigo-100"
-              >
-                <Icon className="w-5 h-5" />
-                {name}
-              </a>
-            ))}
-          </nav>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gradient-to-br from-[#1b5240] via-[#2f6f5a] to-[#cfeee5] text-white">
+      <Navbar />
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col">
-        {/* Top Nav (Mobile) */}
-        <div className="md:hidden bg-white shadow p-4 flex justify-between items-center">
-          <h1 className="text-xl font-bold">Lender Dashboard</h1>
-          <button onClick={() => setMenuOpen(!menuOpen)}>
-            {menuOpen ? (
-              <XIcon className="w-6 h-6" />
-            ) : (
-              <MenuIcon className="w-6 h-6" />
-            )}
-          </button>
-        </div>
+      <div className="container mx-auto px-4 py-10 pt-20">
+        <h1 className="text-3xl font-bold mb-6 text-center">Lender Dashboard</h1>
 
-        {/* Content */}
-        <main className="p-4 md:p-8">
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.5 }}
-            className="space-y-10"
-          >
-            {/* Loan Requests */}
-            <section className="p-6 bg-gradient-to-br from-indigo-50 to-blue-50 rounded-2xl">
-              <h2 className="text-3xl font-bold mb-8 text-slate-800 drop-shadow-sm">
-                Loan Requests
-                <span className="ml-2 text-blue-600 text-xl align-middle bg-blue-100 px-3 py-1 rounded-full">
-                  {loanRequests.length} active
-                </span>
-              </h2>
+        {/* Top card: provider / account controls */}
+        <div className="bg-white text-gray-800 rounded-xl shadow p-6 mb-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="text-sm text-gray-500">Lender provider</div>
+              <div className="flex items-center gap-4 mt-2">
+                <button
+                  className={`px-4 py-2 rounded text-white ${
+                    providerReady ? (isSepolia ? "bg-green-600" : "bg-yellow-600") : "bg-gray-500"
+                  }`}
+                  aria-hidden
+                >
+                  {providerReady ? (isSepolia ? "Connected" : "Connected (wrong network)") : "No provider"}
+                </button>
 
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {loanRequests.map((loan) => (
-                  <motion.div
-                    key={loan.id}
-                    className="group p-6 bg-white/20 backdrop-blur-lg rounded-2xl shadow-lg hover:shadow-xl transition-all border border-white/30"
-                    whileHover={{ scale: 1.01 }}
-                    whileTap={{ scale: 0.98 }}
+                <div className="font-mono text-sm">{account ?? "not connected"}</div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              {!account ? (
+                <button
+                  onClick={connectWallet}
+                  className="px-4 py-2 bg-[#1b5240] hover:opacity-90 text-white rounded shadow text-sm"
+                >
+                  Connect Lender Wallet
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={switchAccount}
+                    className="px-4 py-2 bg-gray-100 rounded shadow text-sm"
                   >
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="text-xl font-semibold text-slate-800 flex items-center gap-2">
-                          <UserCircleIcon className="w-6 h-6 text-blue-500" />
-                          {loan.name}
-                        </h3>
-                        <p className="mt-2 text-3xl font-bold text-slate-900">
-                          ${loan.amount}
-                          <span className="ml-2 text-sm font-normal text-slate-500">
-                            USD
-                          </span>
-                        </p>
-                      </div>
-                      <span
-                        className={`px-3 py-1 rounded-full text-sm font-medium ${
-                          loan.status === "Approved"
-                            ? "bg-emerald-100 text-emerald-700"
-                            : loan.status === "Rejected"
-                            ? "bg-rose-100 text-rose-700"
-                            : "bg-amber-100 text-amber-700"
-                        }`}
-                      >
-                        {loan.status}
-                      </span>
+                    Switch Account
+                  </button>
+
+                  <button
+                    onClick={disconnectWallet}
+                    className="px-4 py-2 bg-red-100 text-red-700 rounded shadow text-sm"
+                  >
+                    Disconnect
+                  </button>
+                </>
+              )}
+
+              <button onClick={() => fetchLoans()} className="px-4 py-2 bg-gray-100 rounded shadow text-sm">Refresh</button>
+            </div>
+          </div>
+
+          {error && (
+            <div className="mt-4 p-3 rounded bg-red-100 text-red-700">
+              {error}
+            </div>
+          )}
+
+          {!isSepolia && providerReady && (
+            <div className="mt-4 p-3 rounded bg-yellow-50 text-yellow-800">
+              Please switch your wallet to Sepolia. Your wallet's network must be Sepolia to interact with the deployed contract.
+            </div>
+          )}
+        </div>
+
+        {/* Loans list */}
+        <div className="bg-white text-gray-800 rounded-xl shadow p-6">
+          {loading ? (
+            <div className="text-center py-12">Loading loans…</div>
+          ) : loans.length === 0 ? (
+            <div className="text-center py-12">No loans found on contract.</div>
+          ) : (
+            <div className="space-y-4">
+              {loans.map((loan) => (
+                <div key={loan.id} className="border rounded p-4 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div>
+                    <div className="text-sm text-gray-500">Borrower</div>
+                    <div className="font-mono">{loan.borrower}</div>
+                    <div className="text-sm text-gray-500 mt-2">Purpose</div>
+                    <div>{loan.purpose}</div>
+                  </div>
+
+                  <div className="text-right">
+                    <div className="text-sm text-gray-500">Amount</div>
+                    <div className="text-xl font-semibold">{loan.amountEth} ETH</div>
+                    <div className="text-sm text-gray-500 mt-2">Duration</div>
+                    <div>{loan.duration} days</div>
+                  </div>
+
+                  <div className="flex flex-col items-end gap-2">
+                    <div
+                      className="px-3 py-1 rounded text-sm"
+                      style={{
+                        background: loan.status === 0 ? "#fef3c7" : loan.status === 1 ? "#dcfce7" : "#fee2e2",
+                        color: loan.status === 0 ? "#92400e" : loan.status === 1 ? "#166534" : "#991b1b",
+                      }}
+                    >
+                      {loan.status === 0 ? "Pending" : loan.status === 1 ? "Approved" : loan.status === 2 ? "Repaid" : "Rejected"}
                     </div>
 
-                    {loan.status === "Pending" && (
-                      <motion.div
-                        className="mt-6 flex gap-3"
-                        initial={{ opacity: 0 }}
-                        animate={{ opacity: 1 }}
-                      >
+                    {loan.status === 0 && (
+                      <div className="flex gap-2">
                         <button
-                          onClick={() => handleApprove(loan.id)}
-                          className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 text-white px-6 py-3 rounded-xl font-semibold hover:shadow-lg hover:scale-[1.02] transition-all"
+                          onClick={() => fundLoan(loan.id, loan.amountWei)}
+                          disabled={actionLoading === loan.id}
+                          className={`px-4 py-2 rounded text-white ${actionLoading === loan.id ? "bg-gray-400" : "bg-green-600 hover:bg-green-700"}`}
                         >
-                          Approve
+                          {actionLoading === loan.id ? "Processing..." : "Accept (Fund)"}
                         </button>
                         <button
-                          onClick={() => handleReject(loan.id)}
-                          className="flex-1 bg-gradient-to-r from-rose-500 to-pink-500 text-white px-6 py-3 rounded-xl font-semibold hover:shadow-lg hover:scale-[1.02] transition-all"
+                          onClick={() => rejectLoan(loan.id)}
+                          disabled={actionLoading === loan.id}
+                          className={`px-4 py-2 rounded text-white ${actionLoading === loan.id ? "bg-gray-400" : "bg-red-600 hover:bg-red-700"}`}
                         >
-                          Reject
+                          {actionLoading === loan.id ? "Processing..." : "Reject"}
                         </button>
-                      </motion.div>
+                      </div>
                     )}
-                  </motion.div>
-                ))}
-              </div>
-            </section>
-
-            {/* Repayments */}
-            <section>
-              <h2 className="text-2xl font-bold mb-4">Repayments</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {repayments.map((repayment) => (
-                  <motion.div
-                    key={repayment.id}
-                    className="p-4 bg-white rounded-lg shadow hover:shadow-md transition"
-                    whileHover={{ scale: 1.02 }}
-                  >
-                    <p className="font-bold">Name: {repayment.name}</p>
-                    <p>Amount: ${repayment.amount}</p>
-                    <p>Due Date: {repayment.dueDate}</p>
-                  </motion.div>
-                ))}
-              </div>
-            </section>
-          </motion.div>
-        </main>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
 }
-
-export default LenderDashboard;

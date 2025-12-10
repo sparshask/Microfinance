@@ -1,0 +1,9 @@
+(await ethers.provider.getCode(addr)).slice(0, 10)
+const addr = "0x27c0cb94e0ae3D39BABc373beE7E5ebA8ABAF46c";
+await c.getUserLoanCount("0xFfb651EfddFD51002041B41bF28dc874ADF2c017");  
+await c.getUserLoanCount("0xBorrowerAddressHere");  // replace with your borrower address
+await c.getLoanCount();                
+const c = Micro.attach(addr);
+const Micro = await ethers.getContractFactory("Microfinance");
+await ethers.provider.getCode(addr);
+const addr = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
