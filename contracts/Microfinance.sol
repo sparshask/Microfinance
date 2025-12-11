@@ -150,11 +150,11 @@ contract Microfinance is Ownable, Pausable, ReentrancyGuard {
     }
 
     /**
-     * @dev Reject a pending loan (owner action)
+     * @dev Reject a pending loan.
+     * NOTE: intentionally NOT onlyOwner so anyone can reject (permanent on-chain).
      */
     function rejectLoan(uint256 _loanId)
         external
-        onlyOwner
         whenNotPaused
     {
         require(_loanId < loans.length, "invalid id");
